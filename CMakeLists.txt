@@ -34,6 +34,9 @@ CPMAddPackage(
 
 add_executable(runner test/runner.cpp)
 target_link_libraries(runner policycb)
+
+add_executable(benchmark test/benchmark.cpp)
+target_link_libraries(benchmark policycb Catch2::Catch2WithMain)
 enable_testing()
 
 endif()

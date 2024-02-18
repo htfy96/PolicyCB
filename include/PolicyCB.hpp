@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <functional>
+#include <iostream>
 #include <memory>
 #include <stdexcept>
 #include <tuple>
@@ -111,13 +112,13 @@ struct WrapperImpl<RetT(Args...), ObjT, movePolicy, copyPolicy, destroyPolicy>
     void copyTo(void* other) const
     {
         if constexpr (copyPolicy == CopyPolicy::DYNAMIC) {
-            new (static_cast<ObjT*>(other)) ObjT(obj);
+            new (static_cast<WrapperImpl*>(other)) WrapperImpl(*this);
         }
     }
     void moveTo(void* other) &&
     {
         if constexpr (movePolicy == MovePolicy::DYNAMIC) {
-            new (static_cast<ObjT*>(other)) ObjT(std::move(obj));
+            new (static_cast<WrapperImpl*>(other)) WrapperImpl(std::move(*this));
         }
     }
 
@@ -383,11 +384,72 @@ class Callback
         }
     }
 
+    auto getStoredObj() const noexcept
+    {
+        if constexpr (dynamicDispatchMethod == DynamicDispatchMethod::FUNC_PTR) {
+            return static_cast<const void*>(this->storage.getStorage());
+        } else if constexpr (dynamicDispatchMethod == DynamicDispatchMethod::VIRTCALL) {
+            return std::launder(reinterpret_cast<const Traits::WrapperBaseType*>(this->storage.getStorage()));
+        } else {
+            return nullptr;
+        }
+    }
+
+    void destroyStoredObj()
+    {
+        if constexpr (dynamicDispatchMethod == DynamicDispatchMethod::NO_DISPATCH ||
+                      dynamicDispatchMethod == DynamicDispatchMethod::FUNC_PTR) {
+            return;
+        } else if constexpr (dynamicDispatchMethod == DynamicDispatchMethod::VIRTCALL) {
+            using WrapperBaseType = Traits::WrapperBaseType;
+            (getStoredObj())->~WrapperBaseType();
+        }
+    }
+
+    void assignFrom(const Callback& other)
+    {
+        if (this == &other) {
+            return;
+        }
+        if constexpr (dynamicDispatchMethod == DynamicDispatchMethod::VIRTCALL) {
+            this->storage = other.storage.cloneStorage();
+            other.getStoredObj()->copyTo(getStoredObj());
+
+        } else if constexpr (dynamicDispatchMethod == DynamicDispatchMethod::FUNC_PTR) {
+            this->storage = other.storage.cloneStorage();
+            memcpy(this->storage.getStorage(), other.storage.getStorage(), this->storage.effectiveBufferSize());
+            this->trampolinePtr = other.trampolinePtr;
+        } else {
+            this->funcPtr = other.funcPtr;
+        }
+    }
+
+    void moveFrom(Callback&& other)
+    {
+        if constexpr (dynamicDispatchMethod == DynamicDispatchMethod::VIRTCALL) {
+            if (other.storage.onHeap()) {
+                this->storage = std::move(other.storage);
+            } else {
+                other.getStoredObj()->moveTo(getStoredObj());
+            }
+        } else if constexpr (dynamicDispatchMethod == DynamicDispatchMethod::FUNC_PTR) {
+            if (other.storage.onHeap()) {
+                this->storage = std::move(other.storage);
+            } else {
+                other.getStoredObj()->moveTo(getStoredObj());
+            }
+            this->trampolinePtr = other.trampolinePtr;
+        } else {
+            this->funcPtr = other.funcPtr;
+        }
+    }
+
   public:
     template<typename ObjT>
     explicit Callback(ObjT obj)
     {
         static_assert(internal::CallableTypeHelper<FT>::template satisfiedBy<ObjT&>::value);
+        static_assert(!std::is_same_v<std::decay_t<ObjT>, Callback>);
         if constexpr (dynamicDispatchMethod == DynamicDispatchMethod::NO_DISPATCH) {
             static_assert(std::is_convertible_v<ObjT, FuncPtrType>);
             this->funcPtr = static_cast<FuncPtrType>(obj);
@@ -425,48 +487,36 @@ class Callback
 
     ~Callback()
     {
-        if constexpr (dynamicDispatchMethod == DynamicDispatchMethod::NO_DISPATCH ||
-                      dynamicDispatchMethod == DynamicDispatchMethod::FUNC_PTR) {
-            return;
-        } else if constexpr (dynamicDispatchMethod == DynamicDispatchMethod::VIRTCALL) {
-            using WrapperBaseType = Traits::WrapperBaseType;
-            (getStoredObj())->~WrapperBaseType();
-        }
+        destroyStoredObj();
     }
 
     Callback(const std::enable_if_t<CP != CopyPolicy::NOCOPY, Callback>& other)
     {
-        if constexpr (dynamicDispatchMethod == DynamicDispatchMethod::VIRTCALL) {
-            this->storage = other.storage.cloneStorage();
-            getStoredObj()->copyTo(this->storage.getStorage());
+        assignFrom(other);
+    }
 
-        } else if constexpr (dynamicDispatchMethod == DynamicDispatchMethod::FUNC_PTR) {
-            this->storage = other.storage.cloneStorage();
-            memcpy(this->storage.getStorage(), other.storage.getStorage(), this->storage.effectiveBufferSize());
-            this->trampolinePtr = other.trampolinePtr;
-        } else {
-            this->funcPtr = other.funcPtr;
+    Callback& operator=(const std::enable_if_t<CP != CopyPolicy::NOCOPY, Callback>& other)
+    {
+        if (this == &other) {
+            return *this;
         }
+        destroyStoredObj();
+        assignFrom(other);
+        return *this;
+    }
+
+    Callback& operator=(const std::enable_if_t<MP != MovePolicy::NOMOVE, Callback>&& other)
+    {
+        if (this == &other) {
+            return *this;
+        }
+        destroyStoredObj();
+        moveFrom(std::move(other));
     }
 
     Callback(std::enable_if_t<MP != MovePolicy::NOMOVE, Callback>&& other)
     {
-        if constexpr (dynamicDispatchMethod == DynamicDispatchMethod::VIRTCALL) {
-            if (other.storage.onHeap()) {
-                this->storage = std::move(other.storage);
-            } else {
-                other.getStoredObj()->moveTo(this->storage.getStorage());
-            }
-        } else if constexpr (dynamicDispatchMethod == DynamicDispatchMethod::FUNC_PTR) {
-            if (other.storage.onHeap()) {
-                this->storage = std::move(other.storage);
-            } else {
-                other.getStoredObj()->moveTo(this->storage.getStorage());
-            }
-            this->trampolinePtr = other.trampolinePtr;
-        } else {
-            this->funcPtr = other.funcPtr;
-        }
+        moveFrom(std::move(other));
     };
 };
 }
