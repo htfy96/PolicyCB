@@ -73,7 +73,7 @@ struct CallableTypeHelper<Ret(Args...)>
 {
     using ReturnType = Ret;
     using ArgsTuple = std::tuple<Args...>;
-    using TrampolineType = Ret(void*, Args&&...);
+    using TrampolineType = Ret(Args&&..., void*);
     using TrampolinePtrType = TrampolineType*;
     template<typename ObjT>
     using satisfiedBy = std::is_invocable_r<Ret, ObjT, Args&&...>;
@@ -124,7 +124,7 @@ struct WrapperImpl<RetT(Args...), ObjT, movePolicy, copyPolicy, destroyPolicy>
 
     RetT invoke(Args&&... args) final
     {
-        return obj(std::forward<Args>(args)...);
+        return std::invoke(obj, std::forward<Args>(args)...);
     }
 };
 
@@ -253,7 +253,7 @@ template<typename RetT, typename ObjT, typename... Args>
 struct TrampolineImpl<RetT(Args...), ObjT>
 {
     static_assert(std::is_invocable_r_v<RetT, ObjT, Args...>);
-    static RetT call(void* obj, Args&&... args)
+    static RetT call(Args&&... args, void* obj)
     {
         return std::invoke(*static_cast<ObjT*>(obj), std::forward<Args>(args)...);
     }
@@ -353,16 +353,27 @@ template<typename FT,
          DestroyPolicy DP,
          SBOPolicy SBOP,
          std::size_t InitialBufferSize = 16>
-class Callback
-  : private internal::CallbackTraits<FT, MP, CP, DP, SBOP, InitialBufferSize>
-  , private internal::StorageBase<typename internal::CallbackTraits<FT, MP, CP, DP, SBOP, InitialBufferSize>::StorageT>
+class Callback;
+
+template<typename RetT,
+         MovePolicy MP,
+         CopyPolicy CP,
+         DestroyPolicy DP,
+         SBOPolicy SBOP,
+         std::size_t InitialBufferSize,
+         typename... Args>
+class Callback<RetT(Args...), MP, CP, DP, SBOP, InitialBufferSize>
+  : private internal::CallbackTraits<RetT(Args...), MP, CP, DP, SBOP, InitialBufferSize>
+  , private internal::StorageBase<
+      typename internal::CallbackTraits<RetT(Args...), MP, CP, DP, SBOP, InitialBufferSize>::StorageT>
   , private internal::TrampolineBase<
-      typename internal::CallbackTraits<FT, MP, CP, DP, SBOP, InitialBufferSize>::TrampolinePtrType>
+      typename internal::CallbackTraits<RetT(Args...), MP, CP, DP, SBOP, InitialBufferSize>::TrampolinePtrType>
   , private internal::FuncPtrBase<
-      typename internal::CallbackTraits<FT, MP, CP, DP, SBOP, InitialBufferSize>::FuncPtrType>
+      typename internal::CallbackTraits<RetT(Args...), MP, CP, DP, SBOP, InitialBufferSize>::FuncPtrType>
 {
   private:
-    using Traits = internal::CallbackTraits<FT, MP, CP, DP, SBOP, InitialBufferSize>;
+    using FT = RetT(Args...);
+    using Traits = internal::CallbackTraits<RetT(Args...), MP, CP, DP, SBOP, InitialBufferSize>;
     using Traits::dynamicDispatchMethod;
     using typename Traits::DynamicDispatchMethod;
 
@@ -450,6 +461,7 @@ class Callback
     {
         static_assert(internal::CallableTypeHelper<FT>::template satisfiedBy<ObjT&>::value);
         static_assert(!std::is_same_v<std::decay_t<ObjT>, Callback>);
+
         if constexpr (dynamicDispatchMethod == DynamicDispatchMethod::NO_DISPATCH) {
             static_assert(std::is_convertible_v<ObjT, FuncPtrType>);
             this->funcPtr = static_cast<FuncPtrType>(obj);
@@ -472,16 +484,14 @@ class Callback
         }
     }
 
-    template<typename... ArgsT>
-    ReturnType operator()(ArgsT&&... args)
+    ReturnType operator()(Args... args)
     {
-        static_assert(std::is_invocable_r_v<ReturnType, FT, ArgsT...>);
         if constexpr (dynamicDispatchMethod == DynamicDispatchMethod::NO_DISPATCH) {
-            return (*this->funcPtr)(std::forward<ArgsT>(args)...);
+            return (*this->funcPtr)(std::forward<Args>(args)...);
         } else if constexpr (dynamicDispatchMethod == DynamicDispatchMethod::FUNC_PTR) {
-            return (*this->trampolinePtr)(getStoredObj(), std::forward<ArgsT>(args)...);
+            return (*this->trampolinePtr)(std::forward<Args>(args)..., getStoredObj());
         } else if constexpr (dynamicDispatchMethod == DynamicDispatchMethod::VIRTCALL) {
-            return (getStoredObj())->invoke(std::forward<ArgsT>(args)...);
+            return (getStoredObj())->invoke(std::forward<Args>(args)...);
         }
     }
 
