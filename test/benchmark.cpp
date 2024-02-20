@@ -271,4 +271,31 @@ TEST_CASE("Member function lambda")
         runBenchmark<BigTrivialCB<FT>>(memPtrs, &mid);
     }
 }
+
+TEST_CASE("Wrapped function")
+{
+    auto objVec = vector{ [](const string& a, const string& b) { return f2(a, b); } };
+
+    using FT = int(string, string);
+    SECTION("Dynamic CB")
+    {
+        runBenchmark<DynamicCB<FT>>(objVec);
+    }
+    SECTION("Fixed Dynamic CB")
+    {
+        runBenchmark<FixedDynamicCB<FT>>(objVec);
+    }
+    SECTION("Trivial CB")
+    {
+        runBenchmark<TrivialCB<FT>>(objVec);
+    }
+    SECTION("Fixed Trivial CB")
+    {
+        runBenchmark<FixedTrivialCB<FT>>(objVec);
+    }
+    SECTION("Std Function")
+    {
+        runBenchmark<StdFunction<FT>>(objVec);
+    }
+}
 }

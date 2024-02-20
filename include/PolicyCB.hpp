@@ -59,7 +59,7 @@ enum class SBOPolicy
     // This disables storage of the original function,
     // essentially makes the Callback a function pointer
     NO_STORAGE = 2,
-} sboPolicy;
+};
 
 namespace internal {
 struct Empty
